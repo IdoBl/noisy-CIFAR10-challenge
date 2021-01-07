@@ -1,10 +1,13 @@
+"""Implementation of noisy CIFAR10 dataset and the relevant DataLoaders
+"""
+
+
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
-from PIL import Image
 
-# Transformations
+# Transformations to be used by data loader
 RC = transforms.RandomCrop(32, padding=4)
 RHF = transforms.RandomHorizontalFlip()
 RVF = transforms.RandomVerticalFlip()
@@ -17,13 +20,15 @@ transform_with_aug = transforms.Compose([TPIL, RC, RHF, TT, NRM])
 # Transforms object for testset with NO augmentation
 transform_no_aug = transforms.Compose([TT, NRM])
 
-# Downloading/Louding CIFAR10 data
+# CIFAR10 data
 trainset = CIFAR10(root='~/data', train=True, download=True)  # , transform = transform_with_aug)
 testset = CIFAR10(root='~/data', train=False, download=True)  # , transform = transform_no_aug)
 base_labels = {'airplane': 0, 'automobile': 0, 'bird': 0, 'cat': 0, 'deer': 0, 'dog': 0, 'frog': 0, 'horse': 0, 'ship': 0, 'truck': 0}
 
 
 class CIFAR10Noisy(Dataset):
+    """Dataset class which creates the pairs of the images and the label dict as instructed in the challenge"""
+
     def __init__(self, use_aug=True, n_pairs=5000):
         self.use_aug = use_aug
         self.data = []
@@ -32,6 +37,7 @@ class CIFAR10Noisy(Dataset):
         # Arrange target indexes according to classes
         class_index = [np.where(np.array(trainset.targets) == i)[0] for i in range(10)]
         rng = np.random.default_rng()
+        # Create trainset image pairs and labels dict
         for _ in range(n_pairs):
             pair_cls = rng.choice(trainset.classes, size=2, replace=False)
             pair_idx = [trainset.class_to_idx[key] for key in pair_cls]
@@ -60,6 +66,7 @@ class CIFAR10Noisy(Dataset):
         img_rand_idx = np.random.randint(0, 2)
         img = self.data[index][img_rand_idx]
         target_arr = np.fromiter(self.targets[index].values(), dtype=np.int)
+        # np.random.choice(target_arr, p=[0, 0, 0, 0, 0, 0, 0.5, 0.5, 0, 0])
         opt_targets = np.where(target_arr == 1)
         target = np.random.choice(opt_targets[0])
 
@@ -67,31 +74,34 @@ class CIFAR10Noisy(Dataset):
             img = transform_with_aug(img)
         else:
             img = transform_no_aug(img)
-        return img, target
+        return img, target, index
 
 
 class DatasetGenerator:
-    def __init__(self, batchSize=128, eval_batch_size=256, dataPath='../../datasets',
-                 seed=123, numOfWorkers=4, cutout_length=16):
+    """Generator which responsible for loading the batches during the train process"""
+
+    def __init__(self, batch_size=128, eval_batch_size=256, data_path='../../datasets',
+                 seed=123, num_of_workers=4, cutout_length=16):
         self.seed = seed
         np.random.seed(seed)
-        self.batchSize = batchSize
+        self.batchSize = batch_size
         self.eval_batch_size = eval_batch_size
-        self.dataPath = dataPath
-        self.numOfWorkers = numOfWorkers
+        self.dataPath = data_path
+        self.numOfWorkers = num_of_workers
         self.cutout_length = cutout_length
-        self.data_loaders = self.loadData()
+        self.data_loaders = self.load_data()
         return
 
-    def getDataLoader(self):
+    def get_loader(self):
         return self.data_loaders
 
-    def loadData(self):
+    def load_data(self):
 
         train_dataset = CIFAR10Noisy()
 
         test_dataset = CIFAR10(root=self.dataPath, train=False,
                                transform=transform_no_aug, download=True)
+
         data_loaders = {'train_dataset': DataLoader(dataset=train_dataset,
                                                     batch_size=self.batchSize,
                                                     shuffle=True,
@@ -108,8 +118,8 @@ class DatasetGenerator:
 
         return data_loaders
 
-
-if __name__ == '__main__':
-    ds = CIFAR10Noisy()
-    print(ds.__len__())
-    ds.__getitem__(500)
+#
+# if __name__ == '__main__':
+#     ds = CIFAR10Noisy()
+#     print(ds.__len__())
+#     ds.__getitem__(500)

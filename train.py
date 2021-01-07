@@ -1,93 +1,76 @@
+"""Main training module
+
+Includes loading application argument, initialize global variables and running the train / eval session.
+"""
+
 import argparse
 import time
-import logging
 import os
 from noisy_dataset import DatasetGenerator
 from tqdm import tqdm
-from utils.utils import AverageMeter, accuracy, count_parameters_in_MB
-from train_util import TrainUtil
+from utils import *
 from loss import SCELoss
-
 from models import *
 
-# ArgParse
-parser = argparse.ArgumentParser(description='SCE Loss')
-parser.add_argument('--lr', type=float, default=0.01)
-parser.add_argument('--l2_reg', type=float, default=5e-4)
-parser.add_argument('--grad_bound', type=float, default=5.0)
-parser.add_argument('--train_log_every', type=int, default=100)
-parser.add_argument('--resume', action='store_true', default=True)
-parser.add_argument('--batch_size', type=int, default=128)
-parser.add_argument('--data_path', default='../../datasets', type=str)
-parser.add_argument('--checkpoint_path', default='checkpoints', type=str)
-parser.add_argument('--data_nums_workers', type=int, default=8)
-parser.add_argument('--epoch', type=int, default=300)
-parser.add_argument('--loss', type=str, default='SCE', help='SCE, CE')
-parser.add_argument('--alpha', type=float, default=1.0, help='alpha scale')
-parser.add_argument('--beta', type=float, default=1.0, help='beta scale')
-parser.add_argument('--version', type=str, default='SCE_stable_v1', help='Version')
-parser.add_argument('--seed', type=int, default=123)
-
-args = parser.parse_args()
+# Global steps - used in logging
 GLOBAL_STEP, EVAL_STEP, EVAL_BEST_ACC, EVAL_BEST_ACC_TOP5 = 0, 0, 0, 0
-cell_arc = None
+# Initialization params - used all over the module
+args, logger, device = None, None, None
 
 
-def setup_logger(name, log_file, level=logging.INFO):
-    """To setup as many loggers as you want"""
-    formatter = logging.Formatter('%(asctime)s %(message)s')
-    handler = logging.FileHandler(log_file)
-    handler.setFormatter(formatter)
+def get_args():
+    """Parsing module args"""
 
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    logger.addHandler(handler)
+    parser = argparse.ArgumentParser(description='SCE Loss')
+    parser.add_argument('--lr', type=float, default=0.01)
+    parser.add_argument('--l2_reg', type=float, default=5e-4)
+    parser.add_argument('--grad_bound', type=float, default=5.0)
+    parser.add_argument('--train_log_every', type=int, default=100)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--data_path', default='../../datasets', type=str)
+    parser.add_argument('--checkpoint_path', default='checkpoints', type=str)
+    parser.add_argument('--data_nums_workers', type=int, default=8)
+    parser.add_argument('--epoch', type=int, default=300)
+    parser.add_argument('--loss', type=str, default='SCE', help='SCE, CE')
+    parser.add_argument('--alpha', type=float, default=1.0, help='alpha scale')
+    parser.add_argument('--beta', type=float, default=1.0, help='beta scale')
+    parser.add_argument('--version', type=str, default='SCE_stable_v1', help='Version')
+    parser.add_argument('--model', type=str, default='scenet', help='Name of the model architecture to be used')
+    parser.add_argument('--optim', type=str, default='sgd', help='Name of the model optimizer to be used')
+    parser.add_argument('--seed', type=int, default=123)
 
-    return logger
-
-
-def adjust_weight_decay(model, l2_value):
-    conv, fc = [], []
-    for name, param in model.named_parameters():
-        print(name)
-        if not param.requires_grad:
-            # frozen weights
-            continue
-        if 'module.fc1' in name:
-            fc.append(param)
-        else:
-            conv.append(param)
-    params = [{'params': conv, 'weight_decay': l2_value}, {'params': fc, 'weight_decay': 0.01}]
-    print(fc)
-    return params
+    return parser.parse_args()
 
 
-if not os.path.exists('logs'):
-    os.makedirs('logs')
-log_file_name = os.path.join('logs', args.version + '.log')
-logger = setup_logger(name=args.version, log_file=log_file_name)
-for arg in vars(args):
-    logger.info("%s: %s" % (arg, getattr(args, arg)))
+def init():
+    """Initialization of module global variables"""
 
-if torch.cuda.is_available():
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = True
-    device = torch.device('cuda')
-    logger.info("Using CUDA!")
-else:
-    device = torch.device('cpu')
+    # parse global args
+    global args
+    global logger
+    global device
+    args = get_args()
+    # Make log configurations
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    log_file_name = os.path.join('logs', args.version + '.log')
+    logger = setup_logger(name=args.version, log_file=log_file_name)
+    for arg in vars(args):
+        logger.info("%s: %s" % (arg, getattr(args, arg)))
 
-
-def log_display(epoch, global_step, time_elapse, **kwargs):
-    display = 'epoch=' + str(epoch) + \
-              '\tglobal_step=' + str(global_step)
-    for key, value in kwargs.items():
-        display += '\t' + str(key) + '=%.5f' % value
-    display += '\ttime=%.2fit/s' % (1. / time_elapse)
-    return display
+    # Decide on torch device
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = True
+        device = torch.device('cuda')
+        logger.info("Using CUDA!")
+    else:
+        device = torch.device('cpu')
 
 
 def model_eval(epoch, fixed_cnn, data_loader):
+    """ Evaluating the training process on current model """
+
     global EVAL_STEP
     fixed_cnn.eval()
     valid_loss_meters = AverageMeter()
@@ -131,8 +114,14 @@ def model_eval(epoch, fixed_cnn, data_loader):
     return valid_acc_meters.avg, valid_acc5_meters.avg
 
 
-def train_fixed(starting_epoch, data_loader, fixed_cnn, criterion, fixed_cnn_optmizer, fixed_cnn_scheduler, utilHelper):
-    global GLOBAL_STEP, reduction_arc, cell_arc, EVAL_BEST_ACC, EVAL_STEP, EVAL_BEST_ACC_TOP5
+def update_target_prob(pred, indexes):
+    pass
+
+
+def train_fixed(starting_epoch, data_loader, fixed_cnn, criterion, fixed_cnn_optmizer, fixed_cnn_scheduler):
+    """ Training function """
+
+    global GLOBAL_STEP, EVAL_BEST_ACC, EVAL_STEP, EVAL_BEST_ACC_TOP5
 
     for epoch in tqdm(range(starting_epoch, args.epoch)):
         logger.info("=" * 20 + "Training" + "=" * 20)
@@ -141,7 +130,7 @@ def train_fixed(starting_epoch, data_loader, fixed_cnn, criterion, fixed_cnn_opt
         train_acc_meters = AverageMeter()
         train_acc5_meters = AverageMeter()
 
-        for images, labels in tqdm(data_loader["train_dataset"]):
+        for images, labels, indexes in tqdm(data_loader["train_dataset"]):
             images, labels = images.to(device), labels.to(device)
             start = time.time()
             fixed_cnn.zero_grad()
@@ -151,7 +140,8 @@ def train_fixed(starting_epoch, data_loader, fixed_cnn, criterion, fixed_cnn_opt
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(fixed_cnn.parameters(), args.grad_bound)
             fixed_cnn_optmizer.step()
-
+            # torch.cuda.synchronize()
+            # update_target_prob(pred.cpu().data.numpy(), indexes)
             acc, acc5 = accuracy(pred, labels, topk=(1, 5))
             acc_sum = torch.sum((torch.max(pred, 1)[1] == labels).type(torch.float))
             total = pred.shape[0]
@@ -178,32 +168,36 @@ def train_fixed(starting_epoch, data_loader, fixed_cnn, criterion, fixed_cnn_opt
                                       gn=grad_norm)
                 logger.info(display)
         fixed_cnn_scheduler.step()
+
+        # Logging
         logger.info("="*20 + "Eval" + "="*20)
         curr_acc, curr_acc5 = model_eval(epoch, fixed_cnn, data_loader)
         logger.info("curr_acc\t%.4f" % curr_acc)
         logger.info("BEST_ACC\t%.4f" % EVAL_BEST_ACC)
         logger.info("curr_acc_top5\t%.4f" % curr_acc5)
         logger.info("BEST_ACC_top5\t%.4f" % EVAL_BEST_ACC_TOP5)
-        payload = '=' * 10 + '\n'
-        payload = payload + ("curr_acc: %.4f\n best_acc: %.4f\n" % (curr_acc, EVAL_BEST_ACC))
-        payload = payload + ("curr_acc_top5: %.4f\n best_acc_top5: %.4f\n" % (curr_acc5, EVAL_BEST_ACC_TOP5))
+
         EVAL_BEST_ACC = max(curr_acc, EVAL_BEST_ACC)
         EVAL_BEST_ACC_TOP5 = max(curr_acc5, EVAL_BEST_ACC_TOP5)
-        logger.info("Model Saved!\n")
-    return
 
 
-def train():
-    global GLOBAL_STEP, reduction_arc, cell_arc
+def run_experiment():
+    """Entry point for running the train / eval process"""
+
     # Dataset
-    dataset = DatasetGenerator(batchSize=args.batch_size,
-                               dataPath=args.data_path,
-                               numOfWorkers=args.data_nums_workers,
+    dataset = DatasetGenerator(batch_size=args.batch_size,
+                               data_path=args.data_path,
+                               num_of_workers=args.data_nums_workers,
                                seed=args.seed)
-    dataLoader = dataset.getDataLoader()
+
+    data_loader = dataset.get_loader()
 
     num_classes = 10
-    fixed_cnn = SCENet()
+
+    # Load model dynamically
+    fixed_cnn = load_model(args.model)
+    fixed_cnn = torch.nn.DataParallel(fixed_cnn)
+    fixed_cnn.to(device)
 
     if args.loss == 'SCE':
         criterion = SCELoss(alpha=args.alpha, beta=args.beta, num_classes=num_classes)
@@ -212,22 +206,18 @@ def train():
     else:
         logger.info("Unknown loss")
 
-    logger.info(criterion.__class__.__name__)
-    logger.info("Number of Trainable Parameters %.4f" % count_parameters_in_MB(fixed_cnn))
-    fixed_cnn = torch.nn.DataParallel(fixed_cnn)
-    fixed_cnn.to(device)
+    logger.info(f'Criterion : {criterion.__class__.__name__}')
+    logger.info(f'Number of Trainable Parameters %.4f' % count_parameters_in_MB(fixed_cnn))
 
-    fixed_cnn_optmizer = torch.optim.SGD(params=adjust_weight_decay(fixed_cnn, args.l2_reg),
-                                         lr=args.lr,
-                                         momentum=0.9,
-                                         nesterov=True)
+    fixed_cnn_optim = get_optimizer(args.optim, fixed_cnn, args)
 
-    fixed_cnn_scheduler = torch.optim.lr_scheduler.MultiStepLR(fixed_cnn_optmizer, milestones=[40, 80], gamma=0.1)
-
-    utilHelper = TrainUtil(checkpoint_path=args.checkpoint_path, version=args.version)
+    fixed_cnn_scheduler = torch.optim.lr_scheduler.MultiStepLR(fixed_cnn_optim, milestones=[40, 80], gamma=0.1)
     starting_epoch = 0
-    train_fixed(starting_epoch, dataLoader, fixed_cnn, criterion, fixed_cnn_optmizer, fixed_cnn_scheduler, utilHelper)
+    train_fixed(starting_epoch, data_loader, fixed_cnn, criterion, fixed_cnn_optim, fixed_cnn_scheduler)
 
 
 if __name__ == '__main__':
-    train()
+    # Init global args, logger, device
+    init()
+    # Start training process
+    run_experiment()

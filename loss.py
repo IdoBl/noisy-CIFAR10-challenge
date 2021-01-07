@@ -1,3 +1,11 @@
+"""The Symmetric Cross Entropy Loss implementation
+
+Includes Reverse Cross Entropy (RCE) term which helps in learning of hard classes while
+noise tolerant to avoid overfitting to noisy labels.
+
+See: https://arxiv.org/abs/1908.06112
+"""
+
 import torch
 import torch.nn.functional as F
 

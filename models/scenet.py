@@ -1,3 +1,8 @@
+"""Implementation of network architecture as suggested in official paper implementation.
+
+See: https://github.com/YisenWang/symmetric_cross_entropy_for_noisy_labels/blob/master/models.py
+"""
+
 import torch.nn as nn
 
 
@@ -49,3 +54,8 @@ class SCENet(nn.Module):
         x = self.fc1(x)
         x = self.fc2(x)
         return x
+
+
+def scenet():
+    return SCENet()
+

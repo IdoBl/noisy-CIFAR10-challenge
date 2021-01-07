@@ -5,5 +5,5 @@ from .resnext import *
 from .densenet import *
 from .googlenet import *
 from .mobilenet import *
-from .scenet import SCENet
-from .densenet3 import DenseNet190
+from .scenet import *
+from .densenet3 import *

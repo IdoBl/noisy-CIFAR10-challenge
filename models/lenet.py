@@ -2,6 +2,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class LeNet(nn.Module):
     def __init__(self):
         super(LeNet, self).__init__()
@@ -21,3 +22,7 @@ class LeNet(nn.Module):
         out = F.relu(self.fc2(out))
         out = self.fc3(out)
         return out
+
+
+def lenet():
+    return LeNet()
