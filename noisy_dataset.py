@@ -65,10 +65,14 @@ class CIFAR10Noisy(Dataset):
         """
         img_rand_idx = np.random.randint(0, 2)
         img = self.data[index][img_rand_idx]
-        target_arr = np.fromiter(self.targets[index].values(), dtype=np.int)
-        # np.random.choice(target_arr, p=[0, 0, 0, 0, 0, 0, 0.5, 0.5, 0, 0])
-        opt_targets = np.where(target_arr == 1)
-        target = np.random.choice(opt_targets[0])
+        target_arr = np.fromiter(self.targets[index].values(), dtype=np.float)
+        # No weights to labels yet or same weights
+        if 1 in target_arr:
+            opt_targets = np.where(target_arr == 1)
+            target = np.random.choice(opt_targets[0])
+        else:
+            target_val = np.random.choice(target_arr, p=target_arr)
+            target = np.where(target_arr == target_val)[0][0]
 
         if self.use_aug:
             img = transform_with_aug(img)
@@ -118,8 +122,33 @@ class DatasetGenerator:
 
         return data_loaders
 
-#
-# if __name__ == '__main__':
-#     ds = CIFAR10Noisy()
-#     print(ds.__len__())
-#     ds.__getitem__(500)
+
+if __name__ == '__main__':
+    data = [[-0.08593865,  0.54177475,  0.08312026, -0.1020374,  -0.4152222,  -0.25962165,0.1514074,   0.40518272, -0.7945103,   0.41773733],
+ [-0.32546175,  0.40577203, -0.2636229,  -0.5520464,   0.55566704, -0.07684339,
+  -0.30999124, -0.19996691,  0.14118223,  0.64797604],
+ [ 0.36379483,  0.27278993, -0.449432,    0.27793324, -0.48690692,  0.10115878,
+   0.18801644, -0.15390219,  0.27907926, -0.1649591 ],
+ [-0.6337068,  -0.5081649,   0.21615173,  0.01803527, -0.1222709,  -0.22864321,
+   0.12365295,  0.5406585,  -0.5175655,   0.2193884 ]]
+    ds = CIFAR10Noisy()
+    pred_arr = np.array(data, dtype=np.float)
+    indexes_arr = np.array([1649,  182, 4212, 3895], dtype=np.int)
+    threshold = 0.3
+    highest_pred = np.argmax(pred_arr, axis=1)
+    for idx, high_pred in enumerate(highest_pred):
+        if np.where(pred_arr[idx][high_pred] >= threshold, True, False) and list(ds.targets[indexes_arr[idx]].values())[high_pred] != 0:
+            key = list(ds.targets[indexes_arr[idx]].keys())[high_pred]
+            labels_idx = np.where(np.array(list(ds.targets[indexes_arr[idx]].values())) != 0)[0]
+            if labels_idx[0] == high_pred:
+                other_key = list(ds.targets[indexes_arr[idx]].keys())[labels_idx[1]]
+                ds.targets[indexes_arr[idx]][key] *= 1.02
+                ds.targets[indexes_arr[idx]][other_key] *= 0.98
+            else:
+                other_key = list(ds.targets[indexes_arr[idx]].keys())[labels_idx[0]]
+                ds.targets[indexes_arr[idx]][key] *= 1.02
+                ds.targets[indexes_arr[idx]][other_key] *= 0.98
+
+
+    print(ds.__len__())
+    ds.__getitem__(500)
