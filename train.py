@@ -28,7 +28,6 @@ def get_args():
     parser.add_argument('--train_log_every', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--data_path', default='../../datasets', type=str)
-    parser.add_argument('--checkpoint_path', default='checkpoints', type=str)
     parser.add_argument('--data_nums_workers', type=int, default=8)
     parser.add_argument('--epoch', type=int, default=300)
     parser.add_argument('--loss', type=str, default='SCE', help='SCE, CE')
@@ -38,6 +37,7 @@ def get_args():
     parser.add_argument('--model', type=str, default='scenet', help='Name of the model architecture to be used')
     parser.add_argument('--optim', type=str, default='sgd', help='Name of the model optimizer to be used')
     parser.add_argument('--seed', type=int, default=123)
+    parser.add_argument('--label_weight', type=bool, default=False, help='Using label weight (True) or not (False)')
 
     return parser.parse_args()
 
@@ -114,8 +114,30 @@ def model_eval(epoch, fixed_cnn, data_loader):
     return valid_acc_meters.avg, valid_acc5_meters.avg
 
 
-def update_target_prob(pred, indexes):
-    pass
+def update_target_prob(pred, indexes, trainset):
+    """My try to add label weights according to model prediction. Only reduced performance
+    Should not be used by default
+    """
+    pred_arr = pred.cpu().data.numpy()
+    indexes_arr = indexes.cpu().data.numpy()
+    threshold = 0.3
+    highest_pred = np.argmax(pred_arr, axis=1)
+    for idx, high_pred in enumerate(highest_pred):
+        if np.where(pred_arr[idx][high_pred] >= threshold, True, False) and \
+                list(trainset.targets[indexes_arr[idx]].values())[high_pred] != 0:
+            key = list(trainset.targets[indexes_arr[idx]].keys())[high_pred]
+            labels_idx = np.where(np.array(list(trainset.targets[indexes_arr[idx]].values())) != 0)[0]
+            if labels_idx[0] == high_pred:
+                other_key = list(trainset.targets[indexes_arr[idx]].keys())[labels_idx[1]]
+                trainset.targets[indexes_arr[idx]][key] *= 1.02
+                trainset.targets[indexes_arr[idx]][other_key] *= 0.98
+            else:
+                other_key = list(trainset.targets[indexes_arr[idx]].keys())[labels_idx[0]]
+                trainset.targets[indexes_arr[idx]][key] *= 1.02
+                trainset.targets[indexes_arr[idx]][other_key] *= 0.98
+            sum_target = trainset.targets[indexes_arr[idx]][key] + trainset.targets[indexes_arr[idx]][other_key]
+            trainset.targets[indexes_arr[idx]][key] = trainset.targets[indexes_arr[idx]][key] / sum_target
+            trainset.targets[indexes_arr[idx]][other_key] = trainset.targets[indexes_arr[idx]][other_key] / sum_target
 
 
 def train_fixed(starting_epoch, data_loader, fixed_cnn, criterion, fixed_cnn_optmizer, fixed_cnn_scheduler):
@@ -136,12 +158,12 @@ def train_fixed(starting_epoch, data_loader, fixed_cnn, criterion, fixed_cnn_opt
             fixed_cnn.zero_grad()
             fixed_cnn_optmizer.zero_grad()
             pred = fixed_cnn(images)
+            if args.label_weight:
+                update_target_prob(pred, indexes, data_loader["train_dataset"].dataset)
             loss = criterion(pred, labels)
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(fixed_cnn.parameters(), args.grad_bound)
             fixed_cnn_optmizer.step()
-            # torch.cuda.synchronize()
-            # update_target_prob(pred.cpu().data.numpy(), indexes)
             acc, acc5 = accuracy(pred, labels, topk=(1, 5))
             acc_sum = torch.sum((torch.max(pred, 1)[1] == labels).type(torch.float))
             total = pred.shape[0]
@@ -167,6 +189,7 @@ def train_fixed(starting_epoch, data_loader, fixed_cnn, criterion, fixed_cnn_opt
                                       lr=lr,
                                       gn=grad_norm)
                 logger.info(display)
+
         fixed_cnn_scheduler.step()
 
         # Logging
